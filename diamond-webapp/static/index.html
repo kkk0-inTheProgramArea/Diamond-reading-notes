@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Diamond · 带 FDR 控制的特征交互发现</title>
+<style>
+  :root{
+    --blue:#2563eb; --blue-d:#1d4ed8; --bg:#f5f7fb; --card:#fff;
+    --line:#e5e7eb; --text:#1f2937; --muted:#6b7280; --green:#16a34a; --red:#dc2626;
+    --purple:#7c3aed; --teal:#0d9488;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Microsoft YaHei","Segoe UI",sans-serif;
+    background:var(--bg);color:var(--text);line-height:1.6}
+  header{background:linear-gradient(135deg,#7c3aed,#4f46e5);color:#fff;padding:28px 20px}
+  header h1{margin:0 0 6px;font-size:22px}
+  header p{margin:0;opacity:.92;font-size:14px}
+  .wrap{max-width:1080px;margin:0 auto;padding:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:20px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+  .card h2{margin:0 0 12px;font-size:16px;display:flex;align-items:center;gap:8px}
+  .step{background:var(--blue);color:#fff;width:24px;height:24px;border-radius:50%;
+    display:inline-flex;align-items:center;justify-content:center;font-size:13px;flex:none}
+  .drop{border:2px dashed #cbd5e1;border-radius:10px;padding:34px;text-align:center;
+    cursor:pointer;transition:.2s;background:#fafbff}
+  .drop:hover,.drop.over{border-color:var(--blue);background:#eff4ff}
+  .drop small{color:var(--muted)}
+  input[type=file]{display:none}
+  .btn{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:10px 18px;
+    font-size:14px;cursor:pointer;transition:.15s}
+  .btn:hover{background:var(--blue-d)}
+  .btn:disabled{background:#9ca3af;cursor:not-allowed}
+  .btn.ghost{background:#fff;color:var(--blue);border:1px solid var(--blue)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left}
+  th{background:#f3f4f6;font-weight:600}
+  td.sample{color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  select{width:100%;padding:5px;border:1px solid var(--line);border-radius:6px;font-size:13px}
+  .opt-row{display:flex;flex-wrap:wrap;gap:18px;align-items:center;margin-top:6px}
+  label.inline{display:flex;align-items:center;gap:6px;font-size:14px;cursor:pointer}
+  .stats{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+  .stat{flex:1;min-width:140px;background:#f8faff;border:1px solid #dbeafe;border-radius:10px;padding:14px}
+  .stat .n{font-size:24px;font-weight:700}
+  .stat .l{color:var(--muted);font-size:13px}
+  .stat.purple .n{color:var(--purple)} .stat.teal .n{color:var(--teal)}
+  .preview{max-height:360px;overflow:auto}
+  .preview table{font-size:12px}
+  .err{color:var(--red);background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px;font-size:14px;margin-top:8px}
+  .err .btn{margin-left:10px;padding:4px 12px;font-size:13px}
+  .svc{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .dot{width:8px;height:8px;border-radius:50%;background:#cbd5e1;flex:none}
+  .dot.ok{background:#16a34a} .dot.bad{background:#dc2626} .dot.wait{background:#f59e0b}
+  header .svc{color:#e5edff}
+  .ok{color:var(--green)}
+  .hidden{display:none}
+  img.plot{max-width:100%;border:1px solid var(--line);border-radius:8px;margin-top:8px}
+  .hint{font-size:12px;color:var(--muted);margin-top:6px}
+  a.dl{color:var(--blue);text-decoration:none;font-weight:600}
+  a.dl:hover{text-decoration:underline}
+  .spin{display:inline-block;width:16px;height:16px;border:2px solid #fff;border-top-color:transparent;
+    border-radius:50%;animation:r 1s linear infinite;vertical-align:middle;margin-right:6px}
+  @keyframes r{to{transform:rotate(360deg)}}
+  .sel-yes{color:var(--green);font-weight:600}
+  .sel-no{color:var(--muted)}
+  .sel-cand{color:var(--blue);font-weight:600}
+  .badge{display:inline-block;background:#ede9fe;color:#6d28d9;border-radius:6px;padding:1px 8px;font-size:12px;margin-left:6px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🔷 Diamond · 带 FDR 控制的特征交互发现</h1>
+  <p>上传 CSV（特征 + 目标变量）→ 自动生成 knockoff → 训练模型 → SHAP 归因 → 在错误发现率(FDR)控制下筛选重要特征与特征交互</p>
+  <div class="svc" style="margin-top:8px"><span class="dot" id="svcDot"></span><span id="svcText">正在检测服务…</span></div>
+  <div class="svc" style="margin-top:6px"><span>👁 本页累计访问：<b id="visitCount">—</b></span></div>
+</header>
+
+<div class="wrap">
+
+  <!-- 方法说明 -->
+  <div class="card">
+    <h2><span class="step" style="background:var(--purple)">📘</span> 方法说明 · 为什么用 FDR 控制的交互发现</h2>
+    <p style="margin:0 0 10px">传统方法常只报告"主效应"（每个特征各自的重要性），难以判断<b>哪些特征是"协同起作用"的</b>。Diamond 基于 <b>model-X knockoffs</b> 框架：</p>
+    <ol style="margin:0 0 10px;padding-left:22px;line-height:1.8">
+      <li>为每个特征生成一个" knockoff 副本"（与该特征统计等价、但与目标无关）；</li>
+      <li>用模型（LightGBM / XGBoost）+ SHAP 计算每对特征的<b>交互强度</b>；</li>
+      <li>用原始特征与 knockoff 的对比构造统计量，在给定 <b>目标 FDR</b> 下筛选"真交互"，<b>自动控制误报比例</b>。</li>
+    </ol>
+    <p class="hint" style="margin:0">💡 建议：特征数适中（如 10–80 列）效果最佳；样本量越大，FDR 控制越稳。本网页版采用轻量 CPU 路径（knockoffsdiag + 树模型 + SHAP）。</p>
+  </div>
+
+  <!-- 步骤1 上传 -->
+  <div class="card">
+    <h2><span class="step">1</span> 上传数据文件（CSV）</h2>
+    <div class="drop" id="drop">
+      <div>📄 点击或拖拽文件到此处</div>
+      <small>支持 .csv（自动识别 UTF-8 / GBK 编码），第一行为表头</small>
+    </div>
+    <div class="hint" style="margin-top:8px">
+      第一次使用？可先下载示例数据体验（最后一列是目标变量，也可在下一步改）：
+      <div class="opt-row" style="margin-top:10px">
+        <a class="btn ghost" href="/api/template" download>⬇ 合成示例（200×6）</a>
+        <a class="btn ghost" href="/api/sample/enhancer" download>⬇ 增强子 enhancer（7809×41）</a>
+        <a class="btn ghost" href="/api/sample/mortality" download>⬇ 死亡率 mortality（14264×50）</a>
+      </div>
+    </div>
+    <input type="file" id="file" accept=".csv" />
+    <div id="upInfo" class="hint hidden"></div>
+    <div id="upErr" class="err hidden"></div>
+  </div>
+
+  <!-- 步骤2 列角色 -->
+  <div class="card hidden" id="mapCard">
+    <h2><span class="step">2</span> 列角色设置（可手动调整）</h2>
+    <p class="hint">为每个列选择角色：<b>目标变量</b>（要预测的 Y）、<b>特征</b>（参与分析 X）、<b>标识列</b>（如学号/样本名，仅保留不参与分析）、<b>忽略</b>。</p>
+    <div class="preview"><table id="mapTable">
+      <thead><tr><th>列名</th><th>类型</th><th>样例</th><th>角色</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </div>
+
+  <!-- 步骤3 参数 -->
+  <div class="card hidden" id="cfgCard">
+    <h2><span class="step">3</span> 分析设置</h2>
+    <div class="opt-row">
+      <label class="inline">模型：
+        <select id="modelSel" style="width:140px">
+          <option value="lightgbm" selected>LightGBM</option>
+          <option value="xgboost">XGBoost</option>
+        </select>
+      </label>
+      <label class="inline">任务类型：
+        <select id="taskSel" style="width:150px">
+          <option value="auto" selected>自动识别</option>
+          <option value="regression">回归</option>
+          <option value="classification">分类</option>
+        </select>
+      </label>
+    </div>
+    <div class="opt-row">
+      <label class="inline">目标 FDR（误报率上限）：
+        <input type="range" id="fdrRange" min="0.05" max="0.5" step="0.05" value="0.2" style="width:160px" />
+        <b id="fdrVal">0.20</b>
+      </label>
+    </div>
+    <div class="hint">提示：FDR 越小越保守（选出的交互更少但更可靠）；越大越宽松。</div>
+    <div style="margin-top:14px">
+      <button class="btn" id="runBtn">开始分析</button>
+      <span id="runMsg" class="hint"></span>
+    </div>
+    <div id="procErr" class="err hidden"></div>
+  </div>
+
+  <!-- 结果 -->
+  <div class="card hidden" id="resCard">
+    <h2><span class="step">4</span> 分析结果</h2>
+    <div class="stats" id="stats"></div>
+    <h3 style="font-size:14px;margin:6px 0">图1 · 特征重要性（mean |SHAP|）</h3>
+    <img class="plot" id="featImg" alt="特征重要性" />
+    <h3 style="font-size:14px;margin:18px 0 4px">图2 · 特征两两交互（|SHAP interaction|）</h3>
+    <img class="plot" id="interImg" alt="交互热力图" />
+    <h3 style="font-size:14px;margin:18px 0 4px">🎯 选定的特征交互（FDR 控制）</h3>
+    <div class="preview"><table id="interTable">
+      <thead><tr><th>排名</th><th>特征 i</th><th>特征 j</th><th>交互强度</th><th>q (FDR 估计)</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <div id="featBox">
+      <h3 style="font-size:14px;margin:18px 0 4px">📊 特征重要性与筛选（按 mean|SHAP| 排序）</h3>
+      <p class="hint" style="margin:0 0 8px">✅ = 通过 FDR 控制（严格，可能为空）；🟦 = 候选（原始效应 &gt; 其 knockoff 副本，值得关注，保证不为空）；— = 未通过。可尝试调大目标 FDR 以选出更多显著特征。</p>
+      <div class="preview"><table id="featTable">
+        <thead><tr><th>特征</th><th>mean|SHAP|</th><th>W 统计量</th><th>状态</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+    <div style="margin-top:12px"><a class="dl" id="dlLink" href="#">⬇ 下载分析结果（CSV）</a></div>
+  </div>
+
+  <!-- 相关论文 -->
+  <div class="card">
+    <h2><span class="step" style="background:var(--purple)">📄</span> 方法论文 · Diamond</h2>
+    <p style="margin:0 0 8px"><b>Error-controlled non-additive interaction discovery in machine learning models</b><br/>
+    Winston Chen, Yifan Jiang, William Stafford Noble, Yang Young Lu<br/>
+    <span class="hint">Nature Machine Intelligence, Vol. 7, September 2025, 1541–1554 · doi:10.1038/s42256-025-01086-8</span></p>
+    <p class="hint" style="margin:0 0 10px">本文提出 <b>Diamond</b>：将 model-X knockoffs 框架用于特征交互发现，在控制错误发现率（FDR）的前提下稳健地找出真正协同作用的特征交互。本网页即基于该方法（轻量 CPU 路径）实现。</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      <a class="btn ghost" href="/static/assets/paper.pdf" download>⬇ 下载 PDF</a>
+      <a class="btn ghost" href="/static/assets/paper.pdf" target="_blank" rel="noopener">🔗 新标签页打开</a>
+    </div>
+    <iframe src="/static/assets/paper.pdf" title="Diamond 论文"
+      style="width:100%;height:640px;border:1px solid var(--line);border-radius:8px"></iframe>
+    <p class="hint" style="margin-top:6px">若浏览器未内嵌显示 PDF，请点「新标签页打开」或「下载 PDF」。</p>
+  </div>
+
+  <!-- 意见反馈 -->
+  <div class="card">
+    <h2><span class="step" style="background:var(--teal)">💬</span> 意见反馈</h2>
+    <p class="hint" style="margin:0 0 12px">使用中遇到问题或有改进建议？欢迎反馈，帮助我们把工具做得更准更好用。</p>
+    <div class="opt-row">
+      <a class="btn" href="mailto:dmeiyue1314@gmail.com?subject=Diamond网页版反馈&body=请把你的使用场景/问题/建议写在这里：">✉️ 发邮件反馈</a>
+      <a class="btn ghost" id="copyMailBtn" href="#">📋 复制反馈邮箱</a>
+    </div>
+    <div id="fbTip" class="hint" style="margin-top:10px"></div>
+  </div>
+
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let SID = null;
+let COLUMNS = [];
+
+const drop = $('#drop'), fileInput = $('#file');
+drop.onclick = () => fileInput.click();
+fileInput.onchange = e => { if (e.target.files[0]) uploadFile(e.target.files[0]); };
+['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over');}));
+drop.addEventListener('drop', e=>{ const f=e.dataTransfer.files[0]; if(f) uploadFile(f); });
+
+const sleep = ms => new Promise(res => setTimeout(res, ms));
+
+async function checkHealth(){
+  const dot = $('#svcDot'), txt = $('#svcText');
+  dot.className = 'dot wait'; txt.textContent = '正在检测服务…';
+  try{
+    const r = await fetch('/api/health', { cache:'no-store' });
+    if(r.ok){ dot.className='dot ok'; txt.textContent='服务正常，可以开始使用'; return true; }
+    dot.className='dot bad'; txt.textContent='服务暂时不可用（HTTP '+r.status+'）';
+  }catch(e){
+    dot.className='dot bad'; txt.textContent='服务暂时不可用，请稍后刷新';
+  }
+  return false;
+}
+checkHealth();
+
+async function trackVisit(){
+  try{
+    const r = await fetch('/api/stats', { cache:'no-store' });
+    if(r.ok){ const j = await r.json(); if(j && typeof j.visits==='number'){ $('#visitCount').textContent = j.visits; return; } }
+  }catch(e){}
+  $('#visitCount').textContent = '—';
+}
+trackVisit();
+
+const FEEDBACK_MAIL = 'dmeiyue1314@gmail.com';
+$('#copyMailBtn').onclick = e => {
+  e.preventDefault();
+  if(navigator.clipboard){
+    navigator.clipboard.writeText(FEEDBACK_MAIL).then(
+      () => { $('#fbTip').textContent = '✅ 已复制反馈邮箱：' + FEEDBACK_MAIL; },
+      () => { $('#fbTip').textContent = '反馈邮箱：' + FEEDBACK_MAIL; }
+    );
+  }else{ $('#fbTip').textContent = '反馈邮箱：' + FEEDBACK_MAIL; }
+};
+
+// ---- 统一请求封装（兼容云端容器唤醒重试）----
+async function request(url, makeOpts, tries = 4){
+  let lastMsg = '服务器暂时无响应';
+  for(let i=0;i<tries;i++){
+    try{
+      const r = await fetch(url, makeOpts());
+      const txt = await r.text();
+      let j = null; try{ j = txt?JSON.parse(txt):null; }catch(e){ j=null; }
+      if(j) return { ok:r.ok, j };
+      lastMsg = (r.status===404)?'服务地址暂不可用（HTTP 404）':'服务器繁忙（HTTP '+r.status+'）';
+    }catch(e){ lastMsg='网络连接中断'; }
+    if(i<tries-1) await sleep(1000*(i+1));
+  }
+  throw new Error(lastMsg+'：服务可能正在唤醒，请稍等后点「🔄 重试」或刷新页面。');
+}
+function showErr(el, msg, retryFn){
+  el.innerHTML=''; el.appendChild(document.createTextNode(msg));
+  if(typeof retryFn==='function'){
+    const b=document.createElement('button'); b.className='btn ghost'; b.textContent='🔄 重试';
+    b.onclick=()=>{ el.classList.add('hidden'); retryFn(); }; el.appendChild(b);
+  }
+  el.classList.remove('hidden');
+}
+
+async function uploadFile(file){
+  $('#upErr').classList.add('hidden');
+  $('#upInfo').textContent='上传中…'; $('#upInfo').classList.remove('hidden');
+  try{
+    const { ok, j } = await request('/api/upload', () => {
+      const fd = new FormData(); fd.append('file', file); return { method:'POST', body:fd };
+    }, 5);
+    if(!ok) throw new Error(j.error || '上传失败');
+    SID = j.session_id; COLUMNS = j.columns;
+    $('#upInfo').textContent = `✅ 已解析：${j.row_count} 行，${j.columns.length} 列`;
+    buildMap(j);
+    $('#mapCard').classList.remove('hidden');
+    $('#cfgCard').classList.remove('hidden');
+  }catch(err){
+    $('#upInfo').classList.add('hidden');
+    showErr($('#upErr'), err.message, () => uploadFile(file));
+  }
+}
+
+function buildMap(j){
+  const tb = $('#mapTable tbody'); tb.innerHTML='';
+  const target = j.suggest_target;
+  COLUMNS.forEach(c=>{
+    const role = c===target ? 'target' : 'feature';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${c}</td><td>${j.dtypes[c]}</td>
+      <td class="sample" title="${j.samples[c].join(', ')}">${j.samples[c].join(', ')}</td>
+      <td><select data-col="${c}">
+        <option value="ignore">忽略</option>
+        <option value="target" ${role==='target'?'selected':''}>目标变量</option>
+        <option value="feature" ${role==='feature'?'selected':''}>特征</option>
+        <option value="id">标识列</option>
+      </select></td>`;
+    tb.appendChild(tr);
+  });
+}
+
+$('#fdrRange').oninput = () => { $('#fdrVal').textContent = parseFloat($('#fdrRange').value).toFixed(2); };
+$('#runBtn').onclick = () => runProcess();
+
+async function runProcess(){
+  $('#procErr').classList.add('hidden');
+  const roles = {target:null, feature:[], id:[]};
+  document.querySelectorAll('#mapTable select').forEach(s=>{
+    const r = s.value; const c = s.dataset.col;
+    if(r==='target') roles.target = c;
+    else if(r==='feature') roles.feature.push(c);
+    else if(r==='id') roles.id.push(c);
+  });
+  if(!roles.target){ alert('请指定 1 个「目标变量」'); return; }
+  if(roles.feature.length===0){ alert('请至少保留 1 个「特征」'); return; }
+
+  const payload = {
+    session_id: SID,
+    target: roles.target,
+    id_cols: roles.id,
+    model: $('#modelSel').value,
+    task: $('#taskSel').value,
+    target_fdr: parseFloat($('#fdrRange').value),
+  };
+  $('#runBtn').disabled = true;
+  $('#runMsg').innerHTML = '<span class="spin"></span>正在提交分析任务…';
+  try{
+    const { ok, j } = await request('/api/process', () => ({
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
+    }), 3);
+    if(!ok) throw new Error(j.error || j.detail || '无法启动分析');
+    await pollJob(j.job_id);
+  }catch(err){
+    showErr($('#procErr'), err.message, runProcess);
+  }finally{
+    $('#runBtn').disabled=false; $('#runMsg').textContent='';
+  }
+}
+
+const STAGE_TXT = {
+  knockoff: '① 生成 knockoff 副本',
+  train: '② 训练 LightGBM / XGBoost 模型',
+  shap: '③ 计算 SHAP 归因',
+  shap_inter: '③ 计算 SHAP 两两交互（最耗时的一步）',
+  select: '④ FDR 控制筛选',
+  plots: '⑤ 绘制图表',
+};
+
+async function pollJob(jobId){
+  // 后台任务模式：服务端异步计算，前端每 3 秒轮询，绕开网关 60 秒超时
+  let failStreak = 0;
+  for(;;){
+    await sleep(3000);
+    let j = null, ok = false;
+    try{
+      const r = await request('/api/job/'+jobId, () => ({}), 2);
+      j = r.j; ok = r.ok; failStreak = 0;
+    }catch(err){
+      // 网络抖动：连续失败 4 次（约 12 秒）才放弃
+      failStreak++;
+      if(failStreak >= 4) throw new Error('与服务器的连接中断，请点「🔄 重试」。');
+      continue;
+    }
+    if(!ok){
+      throw new Error(j.error || j.detail || '任务查询失败，请重新分析');
+    }
+    if(j.status === 'running'){
+      const t = STAGE_TXT[j.stage] || j.stage || '分析中';
+      const pc = Math.round((j.progress||0)*100);
+      $('#runMsg').innerHTML = `<span class="spin"></span>${t}…（约 ${pc}%，大样本会自动抽样，通常 1-3 分钟）`;
+      continue;
+    }
+    if(j.status === 'error'){
+      throw new Error(j.error || '分析失败');
+    }
+    if(j.status === 'done'){
+      showResult(j.result);
+      return;
+    }
+  }
+}
+
+function showResult(j){
+  const s = j.stats;
+  $('#stats').innerHTML = `
+    <div class="stat"><div class="n">${s.n}</div><div class="l">样本数</div></div>
+    <div class="stat"><div class="n">${s.p}</div><div class="l">特征数</div></div>
+    <div class="stat purple"><div class="n">${s.candidate_feature_count}</div><div class="l">候选特征</div></div>
+    <div class="stat teal"><div class="n">${s.selected_interaction_count}</div><div class="l">选定交互(FDR)</div></div>`;
+  $('#featImg').src = 'data:image/png;base64,' + j.plots.feature;
+  $('#interImg').src = 'data:image/png;base64,' + j.plots.interaction;
+
+  const it = $('#interTable tbody'); it.innerHTML='';
+  (j.selected_interactions.length ? j.selected_interactions : []).forEach((r,i)=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${i+1}</td><td>${r.name_i}</td><td>${r.name_j}</td>
+      <td>${r.score.toFixed(4)}</td><td>${r.q.toFixed(4)}</td>`;
+    it.appendChild(tr);
+  });
+  if(!j.selected_interactions.length){
+    it.innerHTML = '<tr><td colspan="5" class="sel-no">当前 FDR 下未选出显著交互（可尝试调大目标 FDR）</td></tr>';
+  }
+
+  const ft = $('#featTable tbody'); ft.innerHTML='';
+  j.feature_table.forEach(r=>{
+    let status, cls;
+    if(r.selected){ status='✅ FDR选定'; cls='sel-yes'; }
+    else if(r.candidate){ status='🟦 候选'; cls='sel-cand'; }
+    else { status='—'; cls='sel-no'; }
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${r.name}</td><td>${r.attr.toFixed(4)}</td><td>${r.W.toFixed(4)}</td>
+      <td class="${cls}">${status}</td>`;
+    ft.appendChild(tr);
+  });
+
+  $('#dlLink').href = '/api/download/' + j.token;
+  $('#resCard').classList.remove('hidden');
+  $('#resCard').scrollIntoView({behavior:'smooth'});
+}
+</script>
+</body>
+</html>
